@@ -55,7 +55,7 @@ def load_finaeon(path, col_name, is_rate=False):
     return yoy
 
 
-def load_macro_data(data_dir='data/raw'):
+def load_macro_data(data_dir='.'):
 
     us_cpi = load_finaeon(f'{data_dir}/USA_CPI_2009to2026_Monthly.csv', 'us_cpi', is_rate=True)['2010-01-01':]
     kor_cpi = load_finaeon(f'{data_dir}/Korea CPI_2009to2026.csv', 'kor_cpi')['2010-01-01':]
