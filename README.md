@@ -1,5 +1,5 @@
 # USD/KRW Exchange Rate Forecasting: Two Step SARIMAX-ML Hybrid Fx Prediction
-
+June 2026.
 ## 1️⃣ Overview
 
 This project develops a SARIMAX-ML hybrid model for forecasting the USD/KRW exchange rate.
