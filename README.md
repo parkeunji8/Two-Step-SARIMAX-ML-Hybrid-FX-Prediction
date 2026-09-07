@@ -37,13 +37,13 @@ The modeling process follows the Box-Jenkins methodology:
 The SARIMAX-SVR hybrid achieved the best forecasting performance among the three residual
 learners, consistently outperforming the random walk benchmark.
 
-| Model | Test RMSE | Directional Accuracy |
-|---|---|---|
-| Random Walk (benchmark) | 37.65 | 50% (theoretical) |
-| SARIMAX only | 39.35 | 48.72 |
-| **SARIMAX + SVR** | **36.76** | **71.79%** |
-| SARIMAX + LGBM | 39.99 | 51.28% |
-| SARIMAX + GPR | 39.70 | 48.72% |
+| Model | Test RMSE | Test MAE | Test MAPE |Directional Accuracy |
+|---|---|---|---|---|
+| Random Walk (benchmark) | 37.65 | 29.19 | 2.13% |50% (theoretical) |
+| SARIMAX only | 39.35 | 30.07 | 2.19% |48.72% |
+| *SARIMAX + SVR* | *36.76* | *28.14* | *2.06%* | *71.79%* |
+| SARIMAX + LGBM | 39.99 | 30.98 | 2.25% |51.28% |
+| SARIMAX + GPR | 39.70 | 30.34 | 2.21% |48.72% |
 
 
 ## 5️⃣ Repository Structure
