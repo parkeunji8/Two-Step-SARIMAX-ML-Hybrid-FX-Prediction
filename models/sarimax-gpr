@@ -1,0 +1,233 @@
+"""
+final_model_gpr.py
+SARIMAX(1,0,1) + GPR residual correction model for USD/KRW forecasting
+"""
+
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from sklearn.preprocessing import RobustScaler
+from sklearn.gaussian_process import GaussianProcessRegressor
+from sklearn.gaussian_process.kernels import RBF, Matern, RationalQuadratic, WhiteKernel
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+import warnings
+warnings.filterwarnings('ignore')
+
+
+def load_market_data(start='2009-12-01', end='2026-05-01'):
+    tickers = {
+        'usdkrw': 'USDKRW=X',
+        'vix': '^VIX',
+        'spy': 'SPY',
+        'kospi': '^KS11',
+        'us10y_rate': '^TNX',
+        'dxy': 'DX-Y.NYB',
+        'wti': 'CL=F',
+        'usdcny': 'USDCNY=X'
+    }
+    raw = yf.download(list(tickers.values()), start=start, end=end, progress=False)
+    symbol_to_name = {v: k for k, v in tickers.items()}
+    df = raw['Close'].rename(columns=symbol_to_name)
+    df = df.resample("ME").last()
+    df['spy_ret'] = df['spy'].pct_change()
+    df['kospi_ret'] = df['kospi'].pct_change()
+    return df.dropna()
+
+
+def load_finaeon(path, col_name, is_rate=False):
+    raw = pd.read_csv(path, header=None, on_bad_lines='skip')
+    header_row = raw[raw.iloc[:, 0] == 'Date'].index[0]
+    data = raw.iloc[header_row + 1:, :4].copy()
+    data.columns = ['Date', 'Ticker', 'Close', 'Annual_Percent_Change']
+    data['Date'] = pd.to_datetime(data['Date'], format='%m/%d/%Y', errors='coerce')
+    data['Close'] = pd.to_numeric(data['Close'], errors='coerce')
+    data = data.dropna(subset=['Date', 'Close']).set_index('Date').sort_index()
+
+    s = data['Close'].resample('ME').last()
+    if is_rate:
+        s.name = col_name
+        return s
+    yoy = s.pct_change(12) * 100
+    yoy.name = col_name
+    return yoy
+
+
+def load_macro_data(data_dir='.'):
+
+    us_cpi = load_finaeon(f'{data_dir}/USA_CPI_2009to2026_Monthly.csv', 'us_cpi', is_rate=True)['2010-01-01':]
+    kor_cpi = load_finaeon(f'{data_dir}/Korea CPI_2009to2026.csv', 'kor_cpi')['2010-01-01':]
+    us_rate = load_finaeon(f'{data_dir}/USA Fed Funds Official Target Rate_2009to2026_daily.csv',
+                            'us_rate', is_rate=True)['2010-01-01':]
+    kor_rate = load_finaeon(f'{data_dir}/Korea interest rate_2009to2026.csv', 'kor_rate', is_rate=True)['2010-01-01':]
+
+    kor_cab = pd.read_csv(f'{data_dir}/kor_cab_2009to2026.csv')
+    kor_cab = kor_cab.iloc[[0]].copy().T.iloc[1:].copy()
+    kor_cab.columns = ['kor_cab']
+    kor_cab.index = pd.to_datetime(kor_cab.index, format='%Y.%m')
+    kor_cab['kor_cab'] = pd.to_numeric(kor_cab['kor_cab'])
+
+    return us_cpi, kor_cpi, us_rate, kor_rate, kor_cab
+
+
+def build_features(df_raw, us_cpi, kor_cpi, us_rate, kor_rate, kor_cab):
+    df_raw = df_raw.join([us_cpi, kor_cpi, us_rate, kor_rate], how='left')
+
+    df_raw.loc['2025-10-31', 'us_cpi'] = 2.85
+    df_raw.loc['2026-04-30', 'us_cpi'] = 3.8
+
+    df_raw['cpi_diff'] = df_raw['us_cpi'] - df_raw['kor_cpi']
+    df_raw['rate_diff'] = df_raw['us_rate'] - df_raw['kor_rate']
+
+    kor_cab.index = kor_cab.index.to_period('M')
+    df_raw.index = df_raw.index.to_period('M')
+    df_raw = df_raw.join(kor_cab, how='left')
+    df_raw.index = df_raw.index.to_timestamp('M')
+
+    df_raw = df_raw.drop(columns=['spy', 'kospi']).dropna()
+
+    y_raw = df_raw['usdkrw']
+    df_raw_x = df_raw.drop(columns=['usdkrw'])
+
+    df_x = df_raw_x.copy()
+    df_x['wti_rate'] = np.log(df_raw_x['wti']).diff()
+    df_x['usdcny_rate'] = np.log(df_raw_x['usdcny']).diff()
+    for col in ['dxy', 'us10y_rate', 'us_cpi', 'kor_cpi', 'us_rate', 'kor_rate',
+                'cpi_diff', 'rate_diff', 'kor_cab']:
+        df_x[f"{col}_diff"] = df_raw_x[col].diff()
+
+    df_x = df_x.drop(columns=['wti', 'dxy', 'us10y_rate', 'us_cpi', 'kor_cpi',
+                               'us_rate', 'kor_rate', 'cpi_diff', 'rate_diff',
+                               'usdcny', 'kor_cab']).dropna()
+    df_x = df_x.drop(columns=['cpi_diff_diff', 'rate_diff_diff'])
+
+    df_x_lag = df_x.shift(1).dropna()
+
+    y_log = np.log(y_raw).diff().dropna()
+    y_log = y_log.loc[df_x_lag.index]
+
+    return y_raw, y_log, df_x_lag
+
+
+def train_test_split_scale(df_x_lag, y_log, train_ratio=0.8):
+    split_idx = int(len(df_x_lag) * train_ratio)
+
+    X_train = df_x_lag.iloc[:split_idx]
+    X_test = df_x_lag.iloc[split_idx:]
+    y_train = y_log.iloc[:split_idx]
+    y_test = y_log.iloc[split_idx:]
+
+    scaler = RobustScaler()
+    X_train_scaled = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns, index=X_train.index)
+    X_test_scaled = pd.DataFrame(scaler.transform(X_test), columns=X_test.columns, index=X_test.index)
+
+    return X_train_scaled, X_test_scaled, y_train, y_test, scaler
+
+
+
+def fit_sarimax(y_train, X_train_scaled, order=(1, 0, 1), seasonal_order=(0, 0, 0, 12)):
+
+    model = SARIMAX(y_train, exog=X_train_scaled, order=order, seasonal_order=seasonal_order)
+    return model.fit(disp=False)
+
+
+def sarimax_rolling_forecast(y_train, y_test, X_train_scaled, X_test_scaled,
+                              order=(1, 0, 1), seasonal_order=(0, 0, 0, 12)):
+
+    pred_rolling = []
+    for i in range(len(y_test)):
+        y_train_roll = pd.concat([y_train, y_test.iloc[:i]])
+        X_train_roll = pd.concat([X_train_scaled, X_test_scaled.iloc[:i]])
+
+        model_roll = SARIMAX(y_train_roll, exog=X_train_roll,
+                              order=order, seasonal_order=seasonal_order)
+        result_roll = model_roll.fit(disp=False)
+        pred = result_roll.forecast(steps=1, exog=X_test_scaled.iloc[[i]])
+        pred_rolling.append(pred.values[0])
+
+    return pd.Series(pred_rolling, index=y_test.index)
+
+
+def clip_predictions(pred_rolling, y_train, lower_q=0.05, upper_q=0.95):
+    lower_bound = y_train.quantile(lower_q)
+    upper_bound = y_train.quantile(upper_q)
+    return pred_rolling.clip(lower=lower_bound, upper=upper_bound)
+
+
+
+def fit_gpr_residual(X_train_scaled, residual, search_params=False, random_state=2026):
+
+    if search_params:
+        params_gpr = {
+            'kernel': [
+                RBF() + WhiteKernel(),
+                Matern(nu=1.5) + WhiteKernel(),
+                Matern(nu=2.5) + WhiteKernel(),
+                RationalQuadratic() + WhiteKernel()
+            ],
+            'alpha': [1e-3, 1e-2, 1e-1]
+        }
+        tscv = TimeSeriesSplit(n_splits=3)
+        gpr = GaussianProcessRegressor(normalize_y=True)
+        search = RandomizedSearchCV(gpr, params_gpr, n_iter=12, cv=tscv,
+                                     scoring='neg_mean_squared_error', random_state=random_state)
+        search.fit(X_train_scaled, residual)
+        print('GPR Best Hyperparameters:', search.best_params_)
+        return search.best_estimator_
+    else:
+
+        kernel = Matern(nu=2.5) + WhiteKernel()
+        gpr = GaussianProcessRegressor(kernel=kernel, alpha=0.001, normalize_y=True)
+        gpr.fit(X_train_scaled, residual)
+        return gpr
+
+
+def logret_to_price(pred_logret, y_raw, y_train, y_test):
+    log_actual = np.log(y_raw)
+    prices = []
+    for i, ret in enumerate(pred_logret):
+        prev_log = log_actual.loc[y_train.index[-1]] if i == 0 else log_actual.loc[y_test.index[i - 1]]
+        prices.append(np.exp(prev_log + ret))
+    return pd.Series(prices, index=y_test.index)
+
+
+def calc_metrics(actual, predicted, pred_logret, y_test, label=""):
+    rmse = np.sqrt(mean_squared_error(actual, predicted))
+    mae = mean_absolute_error(actual, predicted)
+    mape = np.mean(np.abs((actual - predicted) / actual)) * 100
+    da = np.mean(np.sign(pred_logret.values) == np.sign(y_test.values)) * 100
+    print(f"[{label}]  RMSE: {rmse:.2f} | MAE: {mae:.2f} | MAPE: {mape:.2f}% | Directional Acc: {da:.2f}%")
+    return {'rmse': rmse, 'mae': mae, 'mape': mape, 'da': da}
+
+
+
+def main():
+
+    df_raw = load_market_data()
+    us_cpi, kor_cpi, us_rate, kor_rate, kor_cab = load_macro_data(data_dir='data/raw')
+    y_raw, y_log, df_x_lag = build_features(df_raw, us_cpi, kor_cpi, us_rate, kor_rate, kor_cab)
+
+    X_train_scaled, X_test_scaled, y_train, y_test, scaler = train_test_split_scale(df_x_lag, y_log)
+
+    best_result = fit_sarimax(y_train, X_train_scaled)
+    residual = best_result.resid
+
+    pred_rolling = sarimax_rolling_forecast(y_train, y_test, X_train_scaled, X_test_scaled)
+    pred_rolling_clipped = clip_predictions(pred_rolling, y_train)
+
+    best_gpr = fit_gpr_residual(X_train_scaled, residual, search_params=False)
+    pred_gpr = pd.Series(best_gpr.predict(X_test_scaled), index=y_test.index)
+
+    pred_combined = pred_rolling_clipped + pred_gpr
+    pred_combined_price = logret_to_price(pred_combined, y_raw, y_train, y_test)
+    actual_price = y_raw.loc[y_test.index]
+
+    calc_metrics(actual_price, pred_combined_price, pred_combined, y_test, label="SARIMAX + GPR")
+
+    return best_result, best_gpr, scaler, pred_combined_price
+
+
+if __name__ == "__main__":
+    main()
