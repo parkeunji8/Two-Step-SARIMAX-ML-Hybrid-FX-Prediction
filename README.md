@@ -1,12 +1,12 @@
 # USD/KRW Exchange Rate Forecasting: Two Step SARIMAX-ML Hybrid Fx Prediction
 
-## Overview
+## 1️⃣ Overview
 
 This project develops a SARIMAX-ML hybrid model for forecasting the USD/KRW exchange rate.
 Monthly macroeconomic variables are used as exogenous predictors, and a two-step hybrid framework
 is proposed to capture nonlinear patterns that a linear time series model alone cannot explain.
 
-## Data
+## 2️⃣ Data
 
 - **Target variable**: USD/KRW exchange rate (monthly)
 - **Period**: January 2010 – April 2026
@@ -15,7 +15,7 @@ is proposed to capture nonlinear patterns that a linear time series model alone 
 - **Sources**: Yahoo Finance (`yfinance`) for market data; Finaeon for macroeconomic indicators
 
 
-## Methodology
+## 3️⃣ Methodology
 
 The modeling process follows the Box-Jenkins methodology:
 
@@ -32,7 +32,7 @@ The modeling process follows the Box-Jenkins methodology:
    **GPR** — were trained on the in-sample residuals of the SARIMAX model to learn the remaining
    structure.
 
-## Results
+## 4️⃣ Results
 
 The SARIMAX-SVR hybrid achieved the best forecasting performance among the three residual
 learners, consistently outperforming the random walk benchmark.
@@ -46,7 +46,7 @@ learners, consistently outperforming the random walk benchmark.
 | SARIMAX + GPR | 39.70 | 48.72% |
 
 
-## Repository Structure
+## 5️⃣ Repository Structure
 
     ├── notebooks/          # model experimentation
     ├── models/
