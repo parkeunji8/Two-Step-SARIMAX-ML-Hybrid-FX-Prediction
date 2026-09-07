@@ -37,7 +37,7 @@ def load_market_data(start='2009-12-01', end='2026-05-01'):
 
 
 def load_finaeon(path, col_name, is_rate=False):
-    """Finaeon 형식 CSV 로더 (CPI, 금리 등)"""
+
     raw = pd.read_csv(path, header=None, on_bad_lines='skip')
     header_row = raw[raw.iloc[:, 0] == 'Date'].index[0]
     data = raw.iloc[header_row + 1:, :4].copy()
