@@ -55,5 +55,7 @@ learners, consistently outperforming the random walk benchmark.
     │   ├── final_model_lgbm.py  # Final SARIMAX + LGBM pipeline
     ├── results/
     │   ├── figures/        # EDA and final result visualizations
+    ├── docs/
+    │   ├── report.pdf
     ├── requirements.txt
     └── README.md
